@@ -1,206 +1,219 @@
-# Duality AI Offroad Semantic Scene Segmentation
+<div align="center">
 
-**Hackathon:** Duality AI Offroad Autonomy Segmentation Challenge  
-**Model:** DINOv2 ViT-S/14 + Custom Segmentation Head  
-**Framework:** PyTorch  
-**Platform:** Google Colab (CUDA GPU)
+```
+██████╗  █████╗ ██████╗ ███╗   ███╗ ██████╗ ███████╗██╗  ██╗
+██╔══██╗██╔══██╗██╔══██╗████╗ ████║██╔═══██╗██╔════╝██║  ██║
+██████╔╝███████║██║  ██║██╔████╔██║██║   ██║███████╗███████║
+██╔══██╗██╔══██║██║  ██║██║╚██╔╝██║██║   ██║╚════██║██╔══██║
+██████╔╝██║  ██║██████╔╝██║ ╚═╝ ██║╚██████╔╝███████║██║  ██║
+╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+                         C O D E R S
+```
+
+# 🏜️ Offroad Semantic Segmentation
+### Duality AI GHR 2.0 Hackathon 2025
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org)
+[![DINOv2](https://img.shields.io/badge/DINOv2-ViT--B/14-0068C1?style=for-the-badge)](https://github.com/facebookresearch/dinov2)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+*Pixel-perfect desert terrain understanding using self-supervised vision transformers*
+
+</div>
 
 ---
 
-## Repository Structure
+## 📊 Results at a Glance
+
+| Metric | Score |
+|--------|-------|
+| **Val mIoU** | `0.5668` |
+| **mAP@50** | — |
+| **mAP@50:95** | — |
+| **Backbone** | DINOv2 ViT-B/14 (86M params) |
+| **Head** | FPN Decoder (4.3M params) |
+| **Training Images** | 2,857 |
+| **Test Images** | 1,002 |
+| **Classes** | 11 |
+| **Epochs** | 15 |
+| **GPU** | NVIDIA T4 |
+
+---
+
+## 🏗️ Architecture
 
 ```
-duality-segmentation/
-│
-├── README.md                        ← You are here
-│
-├── train.py                         ← Main training script
-│
-├── test.py                          ← Inference script for test images
-│
-├── documentation.txt                ← Full detailed project report
-│
-├── requirements.txt                 ← Python dependencies
-│
-├── config/
-│   └── config.yaml                  ← Training hyperparameters and paths
-│
-├── scripts/
-│   └── visualize.py                 ← Script to visualize segmentation output
-│
-├── runs/                            ← Generated after training (not committed)
-│   ├── best_segmentation_head.pth   ← Best model weights ✅ SUBMIT THIS
-│   ├── checkpoint_latest.pth        ← Latest training checkpoint
-│   ├── checkpoint_epoch_5.pth       ← Milestone checkpoint
-│   ├── checkpoint_epoch_10.pth      ← Milestone checkpoint
-│   ├── checkpoint_epoch_15.pth      ← Milestone checkpoint
-│   ├── checkpoint_epoch_20.pth      ← Milestone checkpoint
-│   ├── loss_curve.png               ← Training loss graph
-│   └── iou_curve.png                ← Validation mIoU graph
-│
-└── .gitignore                       ← Excludes large files from git
+Input Image (952×532×3)
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│         DINOv2 ViT-B/14 Backbone        │
+│              86M Parameters             │
+│                                         │
+│  Block 2  ──► Stage 0 (texture/edges)   │
+│  Block 5  ──► Stage 1 (local structure) │
+│  Block 8  ──► Stage 2 (semantic parts)  │
+│  Block 11 ──► Stage 3 (global context)  │
+│                                         │
+│  Blocks 6–11 fine-tuned @ lr=3e-5       │
+└──────────────┬──────────────────────────┘
+               │  4× (B, 2584, 768) feature maps
+               ▼
+┌─────────────────────────────────────────┐
+│           FPN Decoder Head              │
+│              4.3M Parameters            │
+│                                         │
+│  Lateral projections (768 → 256 each)   │
+│  Top-down fusion (deep guides shallow)  │
+│  3× Progressive upsampling (2×, 2×, 2×) │
+│  Dropout(0.1) + 1×1 Classifier          │
+└──────────────┬──────────────────────────┘
+               │  (B, 11, H, W)
+               ▼
+┌─────────────────────────────────────────┐
+│    Bilinear Interpolation to 952×532    │
+└──────────────┬──────────────────────────┘
+               ▼
+     Output Mask (11 classes, per pixel)
 ```
 
 ---
 
-## Quick Start
+## 🎨 Class Definitions
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/YOUR_USERNAME/duality-segmentation.git
-cd duality-segmentation
-```
+| ID | Class | Color | Weight |
+|----|-------|-------|--------|
+| 0 | Background | ⬛ `#0F0F0F` | 0.4× |
+| 1 | Trees | 🟩 `#228B22` | 1.0× |
+| 2 | Lush Bushes | 🟢 `#00D26E` | 1.2× |
+| 3 | Dry Grass | 🟡 `#D2B478` | 1.0× |
+| 4 | Dry Bushes | 🟫 `#A06428` | 2.0× |
+| 5 | Ground Clutter | 🔘 `#787888` | 3.0× |
+| 6 | Flowers | 🌸 `#FF64B4` | 4.0× |
+| 7 | Logs | 🟤 `#5A3719` | 4.0× |
+| 8 | Rocks | ⚪ `#B4AFAA` | 2.0× |
+| 9 | Landscape | 🟧 `#C2AA6E` | 0.4× |
+| 10 | Sky | 🔵 `#64B4F0` | 0.4× |
 
-### 2. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+---
 
-### 3. Download the Dataset
-Run these cells in Google Colab:
+## 🔧 Key Improvements
+
+### 1. 🧠 FPN Multi-Scale Decoder
+Taps into 4 intermediate DINOv2 transformer blocks simultaneously. A top-down pathway merges deep semantic context with shallow texture features — producing sharper class boundaries than a single-layer decoder.
+
+### 2. 🎯 Focal Loss (γ=2)
+Down-weights easy, well-classified pixels so the gradient budget concentrates on hard misclassifications like Logs and Ground Clutter. Combined with per-class weights for rare classes.
+
+### 3. 🔓 Deeper Backbone Fine-Tuning
+Blocks 6–11 unfrozen (doubled from original 9–11 only). Gradient clipping at `max_norm=1.0` keeps training stable while allowing richer domain adaptation to desert terrain.
+
+### 4. 📈 OneCycleLR Scheduler
+LR ramps up for the first 30% of training then anneals sharply — finds a better minimum in fewer epochs vs CosineAnnealingLR.
+
+### 5. 🔄 Test-Time Augmentation (TTA)
+Validation averages original and horizontally-flipped predictions. Zero training cost, free +1–2 mIoU at inference time.
+
+### 6. 🎲 Richer Augmentation
+Random rotation (±10°), resized crop (60–100% zoom), Gaussian blur, color jitter, and random grayscale — all synchronized between image and mask.
+
+---
+
+## ⚙️ Training Configuration
+
 ```python
-import gdown
+# Backbone
+backbone     = "DINOv2 ViT-B/14"
+unfrozen     = "blocks 6–11"
+embed_dim    = 768
 
-gdown.download("https://drive.google.com/uc?id=1cvwY89SsWYWmP86SVyYd4sDMz_sZ5RmU",
-               "/content/dataset1.zip", quiet=False)
+# Head
+fpn_dim      = 256
+decoder_ups  = 3   # 3× progressive 2× upsample
 
-gdown.download("https://drive.google.com/uc?id=1-6MC_mG3ra8Faw85jfoP55A2Jgixccud",
-               "/content/dataset2.zip", quiet=False)
-
-import zipfile
-with zipfile.ZipFile("/content/dataset1.zip", "r") as z:
-    z.extractall("/content/dataset1")
-with zipfile.ZipFile("/content/dataset2.zip", "r") as z:
-    z.extractall("/content/dataset2")
+# Training
+epochs       = 15
+batch_size   = 2
+lr_head      = 3e-4
+lr_backbone  = 3e-5
+weight_decay = 1e-4
+optimizer    = "AdamW"
+scheduler    = "OneCycleLR (pct_start=0.3)"
+grad_clip    = 1.0
+loss         = "0.6 × FocalLoss(γ=2) + 0.4 × DiceLoss"
+label_smooth = 0.05
+resolution   = "952 × 532"
+amp          = True
 ```
 
-### 4. Train the Model
+---
+
+## 🚀 Setup & Usage
+
+### Installation
 ```bash
-python train.py
+git clone https://github.com/pratyushmathur05/badmosh-coders.git
+cd badmosh-coders
+pip install torch torchvision tqdm matplotlib pillow
 ```
 
-Training will automatically resume from the last checkpoint if the session
-disconnects. Checkpoints are saved to `/content/runs/` after every epoch.
-
-### 5. Run Inference on Test Images
+### Training
 ```bash
+# Update paths in train_fpn.py:
+# TRAIN_DIR, VAL_DIR, RUNS_DIR
+
+python train_fpn.py
+```
+
+### Testing
+```bash
+# Update paths in test.py:
+# TEST_DIR, RUNS_DIR, OUTPUT_DIR
+
 python test.py
 ```
 
-Predictions will be saved to `/content/runs/predictions/`
-
----
-
-## Dataset Structure (after extraction)
-
+### Outputs
 ```
-/content/
-├── dataset1/
-│   └── Offroad_Segmentation_testImages/
-│       └── Segmentation/            ← Test images (no labels)
-│
-└── dataset2/
-    └── Offroad_Segmentation_Training_Dataset/
-        ├── train/
-        │   ├── Color_Images/        ← RGB training images
-        │   └── Segmentation/        ← Segmentation masks
-        └── val/
-            ├── Color_Images/        ← RGB validation images
-            └── Segmentation/        ← Segmentation masks
+test_outputs/
+├── summary_card.png             ← mIoU + mAP gauges overview
+├── iou_bar_chart.png            ← per-class IoU horizontal bars
+├── map_chart.png                ← per-class AP@50
+├── class_performance_tiles.png  ← circular gauge per class
+├── iou_distribution.png         ← histogram of per-image scores
+├── predictions/
+│   └── *_pred.png               ← input | prediction | GT grids
+└── test_results.txt             ← full numeric results
 ```
 
 ---
 
-## Class Labels
-
-| Class Index | Raw Pixel Value | Class Name      |
-|-------------|-----------------|-----------------|
-| 0           | 0               | Background      |
-| 1           | 100             | Trees           |
-| 2           | 200             | Lush Bushes     |
-| 3           | 300             | Dry Grass       |
-| 4           | 500             | Dry Bushes      |
-| 5           | 550             | Ground Clutter  |
-| 6           | 600             | Flowers         |
-| 7           | 700             | Logs            |
-| 8           | 800             | Rocks           |
-| 9           | 7100            | Landscape       |
-| 10          | 10000           | Sky             |
-
----
-
-## Model Architecture
+## 📁 Repository Structure
 
 ```
-Input Image (3 x 266 x 476)
-        ↓
-DINOv2 ViT-S/14 Backbone [FROZEN]
-  - Splits image into 14x14 patches
-  - Outputs patch embeddings (384-dim)
-        ↓
-Segmentation Head [TRAINABLE]
-  - Conv2d(384 → 256) + BatchNorm + GELU
-  - Conv2d(256 → 256) + BatchNorm + GELU
-  - Conv2d(256 → 11)
-        ↓
-Bilinear Upsample → (11 x 266 x 476)
-        ↓
-Argmax → Per-pixel class prediction
+badmosh-coders/
+├── train_fpn.py          ← main training script (FPN + DINOv2)
+├── test.py               ← inference + mIoU + mAP50 evaluation
+├── index.html            ← hackathon presentation website
+├── document.txt          ← full technical report
+└── README.md
 ```
 
 ---
 
-## Training Configuration
+## 🏆 Hackathon
 
-| Parameter      | Value                        |
-|----------------|------------------------------|
-| Epochs         | 20                           |
-| Batch Size     | 4                            |
-| Learning Rate  | 3e-4 (CosineAnnealingLR)     |
-| Optimizer      | AdamW (weight_decay=1e-4)    |
-| Loss Function  | CrossEntropy + Dice Loss     |
-| Image Size     | 476 x 266                    |
-| AMP            | Enabled (GPU only)           |
+**Event:** Duality AI GHR 2.0 Hackathon 2025
+**Team:** Badmosh Coders
+**Platform:** Falcon Digital Twin (synthetic desert data)
+**Stack:** PyTorch · DINOv2 · Google Colab T4 · Falcon Platform
 
 ---
 
-## Results
+<div align="center">
 
-| Metric         | Score  |
-|----------------|--------|
-| Best Val mIoU  | [fill after training] |
-| Final Epoch    | 20     |
+**Built with ◈ by Badmosh Coders**
+*DINOv2 ViT-B/14 · FPN Decoder · 11 Classes · Synthetic Desert Data*
 
-Loss and IoU curves are saved to `runs/loss_curve.png` and `runs/iou_curve.png`
-
----
-
-## Requirements
-
-See `requirements.txt`:
-```
-torch>=1.13
-torchvision>=0.14
-numpy>=1.21
-Pillow>=9.0
-tqdm>=4.64
-matplotlib>=3.5
-PyYAML>=6.0
-```
-
----
-
-## Notes
-
-- Do NOT use test images for training — this will result in disqualification
-- The `runs/` folder is excluded from git via `.gitignore` (too large)
-- Upload `best_segmentation_head.pth` separately or via Git LFS
-- If resuming training after a Colab disconnect, just re-run `train.py` —
-  it will automatically detect and load `checkpoint_latest.pth`
-
----
-
-## Acknowledgements
-
-- [Duality AI](https://falcon.duality.ai) for the dataset and challenge
-- [Meta AI DINOv2](https://github.com/facebookresearch/dinov2) for the backbone
+</div>
