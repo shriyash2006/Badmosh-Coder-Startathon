@@ -1,0 +1,30 @@
+# Model weights and checkpoints (too large for git)
+runs/
+*.pth
+*.pt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dataset files (download separately)
+*.zip
+dataset1/
+dataset2/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Environment
+.env
+venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

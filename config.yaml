@@ -1,0 +1,62 @@
+# ============================================================
+# Training Configuration
+# Duality AI Offroad Segmentation Hackathon
+# ============================================================
+
+# Paths
+paths:
+  train_dir: "/content/dataset2/Offroad_Segmentation_Training_Dataset/train"
+  val_dir:   "/content/dataset2/Offroad_Segmentation_Training_Dataset/val"
+  test_dir:  "/content/dataset1/Offroad_Segmentation_testImages"
+  runs_dir:  "/content/runs"
+
+# Model
+model:
+  backbone: "dinov2_vits14"
+  freeze_backbone: true
+  n_classes: 11
+
+# Input
+input:
+  image_width: 476
+  image_height: 266
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std:  [0.229, 0.224, 0.225]
+
+# Training
+training:
+  epochs: 20
+  batch_size: 4
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  num_workers: 2
+
+# Loss
+loss:
+  use_crossentropy: true
+  use_dice: true
+  dice_smooth: 1.0e-6
+
+# Scheduler
+scheduler:
+  type: "CosineAnnealingLR"
+  T_max: 20
+
+# Checkpointing
+checkpointing:
+  save_every_epoch: true
+  milestone_every: 5
+
+# Classes
+classes:
+  0:  "Background"
+  1:  "Trees"
+  2:  "Lush Bushes"
+  3:  "Dry Grass"
+  4:  "Dry Bushes"
+  5:  "Ground Clutter"
+  6:  "Flowers"
+  7:  "Logs"
+  8:  "Rocks"
+  9:  "Landscape"
+  10: "Sky"
