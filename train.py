@@ -1,17 +1,4 @@
-"""
-Segmentation Training Script
-DINOv2 + Custom Segmentation Head
-Duality AI Offroad Segmentation Hackathon
 
-Features:
-  - Correct 11-class value map (includes Flowers class 600)
-  - Combined CrossEntropy + Dice Loss
-  - CosineAnnealingLR scheduler
-  - Mixed precision (AMP) on GPU, safe fallback on CPU
-  - Auto checkpoint: resumes if session disconnects
-  - Milestone checkpoints every 5 epochs
-  - Loss + IoU plots saved to /content/runs/
-"""
 
 import os
 import torch
@@ -21,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 from PIL import Image
 from tqdm import tqdm
@@ -28,7 +16,7 @@ from tqdm import tqdm
 plt.switch_backend('Agg')
 
 # ============================================================
-# Paths — update these if your folder structure is different
+# Paths
 # ============================================================
 
 TRAIN_DIR = "/content/dataset2/Offroad_Segmentation_Training_Dataset/train"
@@ -36,7 +24,7 @@ VAL_DIR   = "/content/dataset2/Offroad_Segmentation_Training_Dataset/val"
 RUNS_DIR  = "/content/runs"
 
 # ============================================================
-# Class Mapping  (raw pixel value -> class index)
+# Class Mapping
 # ============================================================
 
 value_map = {
@@ -61,6 +49,21 @@ CLASS_NAMES = [
 
 n_classes = len(value_map)  # 11
 
+# Class weights — higher weight for rare classes, lower for dominant ones
+CLASS_WEIGHTS = [
+    0.5,   # 0  Background
+    1.0,   # 1  Trees
+    1.0,   # 2  Lush Bushes
+    1.0,   # 3  Dry Grass
+    1.5,   # 4  Dry Bushes
+    2.0,   # 5  Ground Clutter  (rare)
+    3.0,   # 6  Flowers         (very rare)
+    3.0,   # 7  Logs            (very rare)
+    1.5,   # 8  Rocks
+    0.5,   # 9  Landscape       (dominant)
+    0.5,   # 10 Sky             (dominant)
+]
+
 
 def convert_mask(mask):
     """Convert raw segmentation pixel values to class indices."""
@@ -72,20 +75,20 @@ def convert_mask(mask):
 
 
 # ============================================================
-# Dataset
+# Dataset with Synchronized Augmentation
 # ============================================================
 
 class MaskDataset(Dataset):
-    def __init__(self, data_dir, transform=None, mask_transform=None):
+    def __init__(self, data_dir, img_size, augment=False):
         self.image_dir = os.path.join(data_dir, 'Color_Images')
         self.masks_dir = os.path.join(data_dir, 'Segmentation')
-        self.transform = transform
-        self.mask_transform = mask_transform
-        self.data_ids = self._get_valid_ids()
-        print(f"  Found {len(self.data_ids)} valid image-mask pairs in {data_dir}")
+        self.augment   = augment
+        self.h, self.w = img_size
+        self.data_ids  = self._get_valid_ids()
+        print(f"  Found {len(self.data_ids)} valid pairs in {data_dir}  "
+              f"[augment={augment}]")
 
     def _get_valid_ids(self):
-        """Pair images with masks, handling extension mismatches."""
         all_images = os.listdir(self.image_dir)
         mask_files = set(os.listdir(self.masks_dir))
         valid = []
@@ -95,12 +98,13 @@ class MaskDataset(Dataset):
                 valid.append((fname, fname))
             else:
                 match = next(
-                    (m for m in mask_files if os.path.splitext(m)[0] == base), None
+                    (m for m in mask_files if os.path.splitext(m)[0] == base),
+                    None
                 )
                 if match:
                     valid.append((fname, match))
                 else:
-                    print(f"  [Warning] No mask found for: {fname} -- skipping.")
+                    print(f"  [Warning] No mask for {fname} — skipping.")
         return valid
 
     def __len__(self):
@@ -108,19 +112,54 @@ class MaskDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name, mask_name = self.data_ids[idx]
-        image = Image.open(os.path.join(self.image_dir, img_name)).convert("RGB")
-        mask  = Image.open(os.path.join(self.masks_dir, mask_name))
+        image = Image.open(
+            os.path.join(self.image_dir, img_name)).convert("RGB")
+        mask  = Image.open(
+            os.path.join(self.masks_dir, mask_name))
         mask  = convert_mask(mask)
 
-        if self.transform:
-            image = self.transform(image)
-            mask  = self.mask_transform(mask) * 255
+        # Resize both to target size
+        image = TF.resize(image, (self.h, self.w))
+        mask  = TF.resize(mask,  (self.h, self.w),
+                          interpolation=transforms.InterpolationMode.NEAREST)
+
+        # Synchronized augmentation (same transform on image AND mask)
+        if self.augment:
+            # Random horizontal flip
+            if torch.rand(1) > 0.5:
+                image = TF.hflip(image)
+                mask  = TF.hflip(mask)
+
+            # Random vertical flip
+            if torch.rand(1) > 0.5:
+                image = TF.vflip(image)
+                mask  = TF.vflip(mask)
+
+            # Color jitter on image only (not mask)
+            image = transforms.ColorJitter(
+                brightness=0.3,
+                contrast=0.3,
+                saturation=0.3,
+                hue=0.1
+            )(image)
+
+            # Random grayscale on image only
+            if torch.rand(1) > 0.9:
+                image = TF.rgb_to_grayscale(image, num_output_channels=3)
+
+        # Convert to tensor
+        image = TF.to_tensor(image)
+        image = TF.normalize(image,
+                             mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+
+        mask  = torch.from_numpy(np.array(mask)).long()
 
         return image, mask
 
 
 # ============================================================
-# Segmentation Head
+# Deeper Segmentation Head
 # ============================================================
 
 class SegmentationHead(nn.Module):
@@ -130,13 +169,19 @@ class SegmentationHead(nn.Module):
         self.W = tokenW
 
         self.block = nn.Sequential(
-            nn.Conv2d(in_channels, 256, 3, padding=1),
+            nn.Conv2d(in_channels, 512, 3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.GELU(),
+            nn.Conv2d(512, 256, 3, padding=1),
             nn.BatchNorm2d(256),
             nn.GELU(),
             nn.Conv2d(256, 256, 3, padding=1),
             nn.BatchNorm2d(256),
             nn.GELU(),
-            nn.Conv2d(256, out_channels, 1)
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.GELU(),
+            nn.Conv2d(128, out_channels, 1)
         )
 
     def forward(self, x):
@@ -168,21 +213,22 @@ class DiceLoss(nn.Module):
 
 
 # ============================================================
-# IoU Metric
+# IoU Metric (per-class + mean)
 # ============================================================
 
 def compute_iou(pred, target):
     pred = torch.argmax(pred, dim=1)
-    ious = []
+    ious = {}
     for cls in range(n_classes):
-        pred_inds   = pred == cls
-        target_inds = target == cls
+        pred_inds    = pred == cls
+        target_inds  = target == cls
         intersection = (pred_inds & target_inds).sum().float()
         union        = (pred_inds | target_inds).sum().float()
         if union == 0:
             continue
-        ious.append((intersection / union).item())
-    return np.mean(ious) if ious else 0.0
+        ious[cls] = (intersection / union).item()
+    mean_iou = np.mean(list(ious.values())) if ious else 0.0
+    return mean_iou, ious
 
 
 # ============================================================
@@ -219,10 +265,12 @@ def save_plots(train_losses, val_ious, output_dir):
 # Checkpoint Helpers
 # ============================================================
 
-def save_checkpoint(path, epoch, model, optimizer, scheduler, scaler,
-                    best_iou, train_loss_history, val_iou_history):
+def save_checkpoint(path, epoch, backbone, model, optimizer,
+                    scheduler, scaler, best_iou,
+                    train_loss_history, val_iou_history):
     torch.save({
         "epoch":              epoch,
+        "backbone_state":     backbone.state_dict(),
         "model_state":        model.state_dict(),
         "optimizer_state":    optimizer.state_dict(),
         "scheduler_state":    scheduler.state_dict(),
@@ -233,8 +281,10 @@ def save_checkpoint(path, epoch, model, optimizer, scheduler, scaler,
     }, path)
 
 
-def load_checkpoint(path, model, optimizer, scheduler, scaler, device):
+def load_checkpoint(path, backbone, model, optimizer,
+                    scheduler, scaler, device):
     ckpt = torch.load(path, map_location=device)
+    backbone.load_state_dict(ckpt["backbone_state"])
     model.load_state_dict(ckpt["model_state"])
     optimizer.load_state_dict(ckpt["optimizer_state"])
     scheduler.load_state_dict(ckpt["scheduler_state"])
@@ -261,51 +311,53 @@ def main():
     os.makedirs(RUNS_DIR, exist_ok=True)
 
     # Hyperparameters
-    batch_size = 4
-    lr         = 3e-4
-    n_epochs   = 20
+    batch_size    = 2      # reduced to 2 for higher resolution + bigger model
+    lr_head       = 3e-4
+    lr_backbone   = 1e-5   # much smaller lr for pretrained backbone
+    n_epochs      = 10
 
-    # Image size (must be divisible by 14 for DINOv2)
-    w = int(((960 / 2) // 14) * 14)   # 476
-    h = int(((540 / 2) // 14) * 14)   # 266
-
-    # Transforms
-    transform = transforms.Compose([
-        transforms.Resize((h, w)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225]),
-    ])
-    mask_transform = transforms.Compose([
-        transforms.Resize((h, w)),
-        transforms.ToTensor(),
-    ])
+    # Higher resolution input (divisible by 14)
+    w = int((960 // 14) * 14)   # 952
+    h = int((540 // 14) * 14)   # 532
+    print(f"Input size: {w} x {h}")
 
     # Datasets
     print("\nLoading datasets...")
-    trainset = MaskDataset(TRAIN_DIR, transform, mask_transform)
-    valset   = MaskDataset(VAL_DIR,   transform, mask_transform)
+    trainset = MaskDataset(TRAIN_DIR, img_size=(h, w), augment=True)
+    valset   = MaskDataset(VAL_DIR,   img_size=(h, w), augment=False)
 
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True,
                               num_workers=2, pin_memory=use_amp)
     val_loader   = DataLoader(valset,   batch_size=batch_size, shuffle=False,
                               num_workers=2, pin_memory=use_amp)
 
-    # Backbone
-    print("\nLoading DINOv2 backbone...")
-    backbone = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
-    backbone.eval().to(device)
+    # Backbone — ViT-B/14 (larger than ViT-S/14)
+    print("\nLoading DINOv2 ViT-B/14 backbone...")
+    backbone = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
+    backbone.to(device)
+
+    # Freeze all backbone layers first
     for param in backbone.parameters():
-        param.requires_grad = False   # freeze backbone
+        param.requires_grad = False
+
+    # Unfreeze last 3 transformer blocks for fine-tuning
+    for name, param in backbone.named_parameters():
+        if any(f"blocks.{i}." in name for i in [9, 10, 11]):
+            param.requires_grad = True
+
+    unfrozen = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+    total    = sum(p.numel() for p in backbone.parameters())
+    print(f"Backbone params: {total:,} total  |  {unfrozen:,} unfrozen")
 
     # Probe embedding dim
+    backbone.eval()
     with torch.no_grad():
-        sample    = next(iter(train_loader))[0][:1].to(device)
-        probe     = backbone.forward_features(sample)["x_norm_patchtokens"]
+        dummy     = torch.zeros(1, 3, h, w).to(device)
+        probe     = backbone.forward_features(dummy)["x_norm_patchtokens"]
         embed_dim = probe.shape[2]
-    print(f"DINOv2 embedding dim: {embed_dim}")
+    print(f"Embedding dim: {embed_dim}")
 
-    # Model
+    # Segmentation Head
     model = SegmentationHead(
         in_channels=embed_dim,
         out_channels=n_classes,
@@ -313,12 +365,26 @@ def main():
         tokenH=h // 14,
     ).to(device)
 
-    # Loss, Optimizer, Scheduler, Scaler
-    ce_loss   = nn.CrossEntropyLoss()
+    head_params = sum(p.numel() for p in model.parameters())
+    print(f"Segmentation head params: {head_params:,}")
+
+    # Loss functions
+    class_weights = torch.tensor(CLASS_WEIGHTS).to(device)
+    ce_loss   = nn.CrossEntropyLoss(weight=class_weights)
     dice_loss = DiceLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
-    scaler    = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    # Separate learning rates for backbone and head
+    optimizer = optim.AdamW([
+        {"params": [p for p in backbone.parameters() if p.requires_grad],
+         "lr": lr_backbone},
+        {"params": model.parameters(),
+         "lr": lr_head}
+    ], weight_decay=1e-4)
+
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_epochs)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # Resume from checkpoint if available
     start_epoch        = 0
@@ -328,36 +394,36 @@ def main():
 
     latest_ckpt = os.path.join(RUNS_DIR, "checkpoint_latest.pth")
     if os.path.exists(latest_ckpt):
-        print(f"\nCheckpoint found -- resuming from {latest_ckpt}")
-        start_epoch, best_iou, train_loss_history, val_iou_history = load_checkpoint(
-            latest_ckpt, model, optimizer, scheduler, scaler, device
-        )
-        print(f"Resuming at epoch {start_epoch}  |  Best IoU so far: {best_iou:.4f}")
+        print(f"\nCheckpoint found — resuming from {latest_ckpt}")
+        start_epoch, best_iou, train_loss_history, val_iou_history = \
+            load_checkpoint(latest_ckpt, backbone, model,
+                            optimizer, scheduler, scaler, device)
+        print(f"Resuming at epoch {start_epoch}  |  "
+              f"Best IoU so far: {best_iou:.4f}")
     else:
-        print("\nNo checkpoint found -- starting fresh.")
+        print("\nNo checkpoint found — starting fresh.")
 
     # Training Loop
     print(f"\nStarting training for {n_epochs} epochs...\n")
 
     for epoch in range(start_epoch, n_epochs):
 
-        # Train
+        # ── Train ────────────────────────────────────────────
+        backbone.train()
         model.train()
         train_loss = 0.0
 
         for imgs, labels in tqdm(train_loader,
                                  desc=f"Epoch {epoch+1}/{n_epochs} [Train]"):
             imgs   = imgs.to(device)
-            labels = labels.squeeze(1).long().to(device)
-
-            with torch.no_grad():
-                feats = backbone.forward_features(imgs)["x_norm_patchtokens"]
+            labels = labels.to(device)
 
             with torch.cuda.amp.autocast(enabled=use_amp):
+                feats  = backbone.forward_features(imgs)["x_norm_patchtokens"]
                 logits = model(feats)
                 logits = F.interpolate(logits, size=imgs.shape[2:],
                                        mode="bilinear", align_corners=False)
-                loss = ce_loss(logits, labels) + dice_loss(logits, labels)
+                loss   = ce_loss(logits, labels) + dice_loss(logits, labels)
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -370,45 +436,59 @@ def main():
         avg_loss = train_loss / len(train_loader)
         train_loss_history.append(avg_loss)
 
-        # Validate
+        # ── Validate ─────────────────────────────────────────
+        backbone.eval()
         model.eval()
-        val_ious = []
+        val_ious      = []
+        per_class_iou = {i: [] for i in range(n_classes)}
 
         with torch.no_grad():
             for imgs, labels in tqdm(val_loader,
                                      desc=f"Epoch {epoch+1}/{n_epochs} [Val]  "):
                 imgs   = imgs.to(device)
-                labels = labels.squeeze(1).long().to(device)
-                feats  = backbone.forward_features(imgs)["x_norm_patchtokens"]
+                labels = labels.to(device)
 
                 with torch.cuda.amp.autocast(enabled=use_amp):
+                    feats  = backbone.forward_features(imgs)["x_norm_patchtokens"]
                     logits = model(feats)
                     logits = F.interpolate(logits, size=imgs.shape[2:],
                                            mode="bilinear", align_corners=False)
 
-                val_ious.append(compute_iou(logits, labels))
+                mean_iou, cls_ious = compute_iou(logits, labels)
+                val_ious.append(mean_iou)
+                for cls, iou in cls_ious.items():
+                    per_class_iou[cls].append(iou)
 
         mean_iou = float(np.mean(val_ious))
         val_iou_history.append(mean_iou)
 
+        # Print results
         print(f"\n  Epoch {epoch+1}/{n_epochs}")
-        print(f"  Train Loss : {avg_loss:.4f}")
-        print(f"  Val mIoU   : {mean_iou:.4f}")
-        print(f"  LR         : {scheduler.get_last_lr()[0]:.6f}")
+        print(f"  Train Loss   : {avg_loss:.4f}")
+        print(f"  Val mIoU     : {mean_iou:.4f}")
+        print(f"  LR (head)    : {scheduler.get_last_lr()[1]:.6f}")
+        print(f"  LR (backbone): {scheduler.get_last_lr()[0]:.7f}")
+        print("  Per-class IoU:")
+        for cls in range(n_classes):
+            scores = per_class_iou[cls]
+            if scores:
+                print(f"    [{cls:2d}] {CLASS_NAMES[cls]:<16}: {np.mean(scores):.4f}")
+            else:
+                print(f"    [{cls:2d}] {CLASS_NAMES[cls]:<16}: N/A")
 
-        # Save latest checkpoint every epoch
+        # Save latest checkpoint
         save_checkpoint(
             os.path.join(RUNS_DIR, "checkpoint_latest.pth"),
-            epoch, model, optimizer, scheduler, scaler,
+            epoch, backbone, model, optimizer, scheduler, scaler,
             best_iou, train_loss_history, val_iou_history
         )
         print("  >> Latest checkpoint saved.")
 
-        # Save milestone checkpoint every 5 epochs
+        # Milestone checkpoint every 5 epochs
         if (epoch + 1) % 5 == 0:
             save_checkpoint(
                 os.path.join(RUNS_DIR, f"checkpoint_epoch_{epoch+1}.pth"),
-                epoch, model, optimizer, scheduler, scaler,
+                epoch, backbone, model, optimizer, scheduler, scaler,
                 best_iou, train_loss_history, val_iou_history
             )
             print(f"  >> Milestone checkpoint saved (epoch {epoch+1}).")
@@ -420,13 +500,17 @@ def main():
                 model.state_dict(),
                 os.path.join(RUNS_DIR, "best_segmentation_head.pth")
             )
-            print(f"  >> New best model saved! (IoU: {best_iou:.4f})")
+            torch.save(
+                backbone.state_dict(),
+                os.path.join(RUNS_DIR, "best_backbone.pth")
+            )
+            print(f"  >> New best model saved! (mIoU: {best_iou:.4f})")
 
     # Done
     print(f"\nTraining complete!  Best Val mIoU: {best_iou:.4f}")
     save_plots(train_loss_history, val_iou_history, RUNS_DIR)
 
-    # Auto-backup runs to Google Drive if mounted
+    # Auto-backup to Google Drive
     gdrive_runs = "/content/drive/MyDrive/segmentation_runs"
     if os.path.exists("/content/drive/MyDrive"):
         import shutil
