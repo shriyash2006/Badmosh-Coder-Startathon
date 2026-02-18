@@ -37,20 +37,10 @@ body {
   font-size: 16px;
   line-height: 1.6;
   overflow-x: hidden;
-  cursor: none;
+  
 }
 
 /* ── Custom cursor ── */
-.cursor {
-  width: 8px; height: 8px;
-  background: var(--accent);
-  border-radius: 50%;
-  position: fixed; pointer-events: none;
-  z-index: 9999;
-  transform: translate(-50%, -50%);
-  transition: width .15s, height .15s, background .15s;
-  mix-blend-mode: difference;
-}
 
 .cursor-trail {
   width: 28px; height: 28px;
@@ -62,19 +52,6 @@ body {
   transition: transform .12s var(--ease), width .2s, height .2s;
 }
 
-body:hover .cursor { width: 10px; height: 10px; }
-
-/* ── Scanlines ── */
-.scanlines {
-  position: fixed; inset: 0; pointer-events: none; z-index: 9000;
-  background: repeating-linear-gradient(
-    to bottom,
-    transparent 0px,
-    transparent 3px,
-    rgba(0,0,0,0.04) 3px,
-    rgba(0,0,0,0.04) 4px
-  );
-}
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 3px; }
