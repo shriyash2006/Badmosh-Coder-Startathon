@@ -8,17 +8,17 @@
 /* ── DATA ─────────────────────────────────────── */
 
 const CLASS_DATA = [
-  { name: "Background",     iou: 0.62, color: "#555568", weight: 0.5  },
-  { name: "Trees",          iou: 0.71, color: "#2d6b3a", weight: 1.0  },
-  { name: "Lush Bushes",    iou: 0.58, color: "#39e075", weight: 1.0  },
-  { name: "Dry Grass",      iou: 0.65, color: "#f5c842", weight: 1.0  },
-  { name: "Dry Bushes",     iou: 0.54, color: "#8b6914", weight: 1.5  },
-  { name: "Ground Clutter", iou: 0.38, color: "#6b6050", weight: 2.0  },
-  { name: "Flowers",        iou: 0.29, color: "#ff4d1c", weight: 3.0  },
-  { name: "Logs",           iou: 0.33, color: "#7a4a2a", weight: 3.0  },
-  { name: "Rocks",          iou: 0.61, color: "#888080", weight: 1.5  },
-  { name: "Landscape",      iou: 0.74, color: "#d4852a", weight: 0.5  },
-  { name: "Sky",            iou: 0.82, color: "#4da6ff", weight: 0.5  },
+  { name: "Background",     iou: 1.0000, color: "#555568", weight: 0.5  },
+  { name: "Trees",          iou: 0.7815, color: "#2d6b3a", weight: 1.0  },
+  { name: "Lush Bushes",    iou: 0.6599, color: "#39e075", weight: 1.0  },
+  { name: "Dry Grass",      iou: 0.6669, color: "#f5c842", weight: 1.0  },
+  { name: "Dry Bushes",     iou: 0.4697, color: "#8b6914", weight: 1.5  },
+  { name: "Ground Clutter", iou: 0.3222, color: "#6b6050", weight: 2.0  },
+  { name: "Flowers",        iou: 0.5391, color: "#ff4d1c", weight: 3.0  },
+  { name: "Logs",           iou: 0.3198, color: "#7a4a2a", weight: 3.0  },
+  { name: "Rocks",          iou: 0.4653, color: "#888080", weight: 1.5  },
+  { name: "Landscape",      iou: 0.4699, color: "#d4852a", weight: 0.5  },
+  { name: "Sky",            iou: 0.9804, color: "#4da6ff", weight: 0.5  },
 ];
 
 const TRAINING_DATA = [
@@ -63,7 +63,7 @@ const IMPROVEMENTS = [
 
 /* ── CURSOR ────────────────────────────────────── */
 
-(function initCursor() {
+(function initCursorDISABLED() {
   const cursor = document.getElementById("cursor");
   const trail  = document.getElementById("cursor-trail");
   let tx = 0, ty = 0, cx = 0, cy = 0;
@@ -175,7 +175,7 @@ function countUp(el, target, duration = 1200, delay = 0) {
   const obs = new IntersectionObserver((entries) => {
     entries.forEach((e) => {
       if (e.isIntersecting) {
-        countUp(el, 0.3911, 1600, 200);
+        countUp(el, 0.5668, 1600, 200);
         obs.unobserve(e.target);
       }
     });
